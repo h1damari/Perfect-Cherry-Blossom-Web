@@ -1,0 +1,36 @@
+{
+  "name": "th08-web",
+  "version": "0.1.0",
+  "description": "Touhou 08 ~ Imperishable Night browser port (TypeScript, original-data-driven). Stage 1 + Border Team vertical slice.",
+  "homepage": "https://agentmystia.github.io/th08_web/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentMystia/th08_web.git"
+  },
+  "bugs": "https://github.com/AgentMystia/th08_web/issues",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "build": "esbuild src/main.ts --bundle --format=iife --outfile=dist/th08.js --sourcemap",
+    "dev": "esbuild src/main.ts --bundle --format=iife --outfile=dist/th08.js --sourcemap --watch --servedir=.",
+    "extract-assets": "node scripts/extract-th08-assets.mjs",
+    "generate-data": "node scripts/generate-th08-data.mjs",
+    "generate-bgm": "node scripts/split-th08-bgm.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "verify:edit": "node scripts/verify.mjs edit",
+    "verify:fast": "node scripts/verify.mjs fast",
+    "verify:full": "node scripts/verify.mjs full",
+    "perf:smoke": "node scripts/perf-smoke.mjs",
+    "latency:trace": "node scripts/latency-probe.mjs",
+    "prepare-pages": "node scripts/prepare-pages.mjs",
+    "deploy": "node scripts/deploy-pages.mjs",
+    "replay:verify:th08": "node scripts/replay-verify-th08.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "esbuild": "^0.25.0",
+    "pngjs": "^7.0.0",
+    "typescript": "^5.6.0"
+  }
+}
