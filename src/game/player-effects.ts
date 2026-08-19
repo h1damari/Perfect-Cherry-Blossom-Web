@@ -1,0 +1,188 @@
+import { AnmRunner, type Anm } from '../formats/anm';
+import type { Renderer } from '../gfx/renderer';
+
+// Script-driven player effect layer (bomb visuals). Each entry runs one
+// script from the character's playerXX.anm at a playfield-space anchor the
+// host may drift (vx/vy); the scripts themselves carry the real animation
+// (scale/fade/blend/offset wander) — see the bomb choreography notes in
+// stage-scene.ts. Entries die when their runner removes itself or their ttl
+// lapses (several bomb scripts end in `static` and never self-remove).
+
+export interface PlayerEffectSpawn {
+  scriptId: number;
+  x: number;
+  y: number;
+  vx?: number;
+  vy?: number;
+  // Frames to wait before the script starts running.
+  delay?: number;
+  // Hard cull age in frames (counted from the script start), for scripts
+  // that end in `static` instead of removing themselves.
+  ttl?: number;
+  // Fixed draw rotation (e.g. knives oriented along their drift vector).
+  rotation?: number;
+  // Host-driven color modulation (FUN_00425430/0x425b70 param_5 → VM
+  // color): an RGB multiplier applied on top of the script's own color.
+  color?: number;
+  // Host-driven initial scale multiplier (FUN_00425430's callers pass the
+  // burst magnitude — e.g. the orb-release flash at 8x).
+  scale?: number;
+  // Alpha multiplier for hosts that need a translucent presentation
+  // (enemy familiars' ethereal state draws at half alpha).
+  alpha?: number;
+  // Track a live bomb actor: the entry follows its position (and, with
+  // followRotate, its heading) every frame, and culls when the actor's
+  // state clears — the exe attaches each attack slot's ANM to the slot
+  // itself and draws it at the slot position (FUN_00403f50/FUN_0044aa20).
+  follow?: { x: number; y: number; angle: number; state: number };
+  followRotate?: boolean;
+}
+
+export interface PlayerEffectHandle {
+  // Swap the running script (exe FUN_00403f50 re-arm — e.g. SakuyaA's
+  // knives switch to the impact animation on their first hit).
+  setScript(id: number): void;
+  // Fire an ANM interrupt on the entry's live VM (player00's bomb-orb
+  // script 19 waits through its pulse loop and label 1 runs the authored
+  // 6x-balloon burst/fade — FUN_00407120 writes VM+0x1fe natively).
+  interrupt(label: number): void;
+  release(): void;
+}
+
+interface Entry {
+  runner: AnmRunner | null;
+  scriptId: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  delay: number;
+  ttl: number;
+  rotation: number | undefined;
+  color: number | undefined;
+  scale: number | undefined;
+  alpha: number | undefined;
+  age: number;
+  follow?: { x: number; y: number; angle: number; state: number };
+  followRotate?: boolean;
+}
+
+export class PlayerEffects {
+  private entries: Entry[] = [];
+
+  constructor(private anm: Anm) {}
+
+  spawn(s: PlayerEffectSpawn): void {
+    this.entries.push({
+      runner: null,
+      scriptId: s.scriptId,
+      x: s.x,
+      y: s.y,
+      vx: s.vx ?? 0,
+      vy: s.vy ?? 0,
+      delay: s.delay ?? 0,
+      ttl: s.ttl ?? Infinity,
+      rotation: s.rotation,
+      color: s.color,
+      scale: s.scale,
+      alpha: s.alpha,
+      age: 0,
+      follow: s.follow,
+      followRotate: s.followRotate
+    });
+  }
+
+  // Spawn returning a handle for entries whose script the bomb code needs
+  // to re-arm later (SakuyaA impact swap).
+  spawnHandle(s: PlayerEffectSpawn): PlayerEffectHandle {
+    this.spawn(s);
+    const entry = this.entries[this.entries.length - 1];
+    return {
+      setScript: (id: number) => {
+        entry.scriptId = id;
+        entry.runner = null; // re-arms on the next update
+      },
+      interrupt: (label: number) => {
+        entry.runner?.interrupt(label);
+      },
+      release: () => {
+        entry.age = entry.ttl = 0;
+      }
+    };
+  }
+
+  update(rate = 1): void {
+    for (const e of this.entries) {
+      if (e.follow) {
+        if (e.follow.state === 0) {
+          e.age = e.ttl = 0;
+          continue;
+        }
+        e.x = e.follow.x;
+        e.y = e.follow.y;
+        if (e.followRotate) e.rotation = e.follow.angle + Math.PI / 2;
+      }
+      if (e.delay > 0) {
+        e.delay -= rate;
+        continue;
+      }
+      if (!e.runner) {
+        // The AnmRunner constructor executes the script's time-0
+        // instructions; the first update comes next frame. Multi-entry player
+        // anm (TH08 player00: entry 1 holds the bomb art at spriteBase 44 —
+        // its on-disk script ids 19-22 and local sprite refs both need the
+        // entry's base) resolves to the owning entry so sprite refs land in
+        // the right table.
+        if (this.anm.hasScript(e.scriptId)) {
+          let opts: ConstructorParameters<typeof AnmRunner>[2];
+          for (let i = 0; i < this.anm.entries.length; i++) {
+            if (this.anm.hasScriptInEntry(i, e.scriptId)) {
+              opts = { entryIndex: i, spriteIndexOffset: this.anm.entries[i].spriteBase };
+              break;
+            }
+          }
+          e.runner = new AnmRunner(this.anm, e.scriptId, opts);
+        } else e.age = e.ttl = 0; // unknown script: cull quietly
+        continue;
+      }
+      e.runner.update(rate);
+      e.x += e.vx * rate;
+      e.y += e.vy * rate;
+      e.age += rate;
+    }
+    let w = 0;
+    for (const e of this.entries) {
+      const dead = (e.runner && e.runner.removed) || e.age >= e.ttl;
+      if (!dead) this.entries[w++] = e;
+    }
+    this.entries.length = w;
+  }
+
+  // Fires an ANM interrupt on every running entry (bomb-end fade-outs use
+  // interrupt label 1 in the player bomb scripts).
+  interruptAll(label: number): void {
+    for (const e of this.entries) e.runner?.interrupt(label);
+  }
+
+  clear(): void {
+    this.entries.length = 0;
+  }
+
+  get active(): boolean {
+    return this.entries.length > 0;
+  }
+
+  draw(r: Renderer, ox: number, oy: number): void {
+    for (const e of this.entries) {
+      if (!e.runner) continue;
+      const frame = e.runner.spriteFrame();
+      if (!frame) continue;
+      const opts: { rotation?: number; color?: number; scaleMultiplier?: number; alpha?: number } = {};
+      if (e.rotation != null) opts.rotation = e.rotation;
+      if (e.color != null) opts.color = e.color;
+      if (e.scale != null) opts.scaleMultiplier = e.scale;
+      if (e.alpha != null) opts.alpha = e.alpha;
+      r.drawAnmFrame(frame, ox + e.x, oy + e.y, opts);
+    }
+  }
+}
